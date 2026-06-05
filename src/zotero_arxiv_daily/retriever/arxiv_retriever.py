@@ -98,14 +98,13 @@ class ArxivRetriever(BaseRetriever):
                 search = arxiv.Search(id_list=current_ids)
                 return list(client.results(search))
             except arxiv.HTTPError as err:
-                is_rate_limit = err.status == 429
-                if not is_rate_limit:
+                if not self._is_retryable_api_error(err):
                     raise
 
                 if batch_size > 1:
                     batch_size = max(1, batch_size // 2)
                     logger.warning(
-                        f"arXiv API rate-limited batch of {len(current_ids)} papers. "
+                        f"arXiv API returned HTTP {err.status} for a batch of {len(current_ids)} papers. "
                         f"Retrying with smaller batch size {batch_size}."
                     )
                     return self._fetch_split_batches(client, current_ids, rss_entries_by_id, batch_size)
@@ -113,19 +112,22 @@ class ArxivRetriever(BaseRetriever):
                 if attempt < MAX_BATCH_FETCH_ATTEMPTS - 1:
                     sleep_seconds = BACKOFF_BASE_SECONDS * (attempt + 1)
                     logger.warning(
-                        f"arXiv API rate-limited single-paper lookup {current_ids[0]}. "
+                        f"arXiv API returned HTTP {err.status} for single-paper lookup {current_ids[0]}. "
                         f"Retrying in {sleep_seconds}s."
                     )
                     time.sleep(sleep_seconds)
                     continue
 
                 logger.warning(
-                    f"arXiv API kept returning HTTP 429 for {current_ids[0]}. "
+                    f"arXiv API kept returning HTTP {err.status} for {current_ids[0]}. "
                     "Falling back to RSS metadata for this paper."
                 )
                 return self._build_rss_fallback_batch(current_ids, rss_entries_by_id)
 
         return self._build_rss_fallback_batch(current_ids, rss_entries_by_id)
+
+    def _is_retryable_api_error(self, err: arxiv.HTTPError) -> bool:
+        return err.status == 429 or 500 <= err.status < 600
 
     def _fetch_split_batches(
         self,
